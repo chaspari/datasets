@@ -146,7 +146,7 @@ class RegisteredDataset(abc.ABCMeta):
   def __new__(cls, cls_name, bases, class_dict):
     name = naming.camelcase_to_snakecase(cls_name)
     class_dict["name"] = name
-    builder_cls = super(RegisteredDataset, cls).__new__(  # pylint: disable=too-many-function-args
+    builder_cls = super(RegisteredDataset, cls).__new__(  # pylint: disable=too-many-function-args,redefined-outer-name
         cls, cls_name, bases, class_dict)
 
     if py_utils.is_notebook():  # On Colab/Jupyter, we allow overwriting
@@ -176,6 +176,34 @@ def list_builders():
   return sorted(list(_DATASET_REGISTRY))
 
 
+def builder_cls(name: str):
+  """Fetches a `tfds.core.DatasetBuilder` class by string name.
+
+  Args:
+    name: `str`, the registered name of the `DatasetBuilder` (the snake case
+      version of the class name).
+
+  Returns:
+    A `tfds.core.DatasetBuilder` class.
+
+  Raises:
+    DatasetNotFoundError: if `name` is unrecognized.
+  """
+  name, kwargs = _dataset_name_and_kwargs_from_name_str(name)
+  if kwargs:
+    raise ValueError(
+        "`builder_cls` only accept the `dataset_name` without config, "
+        "version or arguments. Got: name='{}', kwargs={}".format(name, kwargs))
+
+  if name in _ABSTRACT_DATASET_REGISTRY:
+    raise DatasetNotFoundError(name, is_abstract=True)
+  if name in _IN_DEVELOPMENT_REGISTRY:
+    raise DatasetNotFoundError(name, in_development=True)
+  if name not in _DATASET_REGISTRY:
+    raise DatasetNotFoundError(name)
+  return _DATASET_REGISTRY[name]
+
+
 def builder(name, **builder_init_kwargs):
   """Fetches a `tfds.core.DatasetBuilder` by string name.
 
@@ -201,17 +229,9 @@ def builder(name, **builder_init_kwargs):
   """
   name, builder_kwargs = _dataset_name_and_kwargs_from_name_str(name)
   builder_kwargs.update(builder_init_kwargs)
-  if name in _ABSTRACT_DATASET_REGISTRY:
-    raise DatasetNotFoundError(name, is_abstract=True)
-  if name in _IN_DEVELOPMENT_REGISTRY:
-    raise DatasetNotFoundError(name, in_development=True)
-  if name not in _DATASET_REGISTRY:
-    raise DatasetNotFoundError(name)
-  try:
-    return _DATASET_REGISTRY[name](**builder_kwargs)
-  except BaseException:
-    logging.error("Failed to construct dataset %s", name)
-    raise
+  with py_utils.try_reraise(
+      prefix="Failed to construct dataset {}".format(name)):
+    return builder_cls(name)(**builder_kwargs)
 
 
 @api_utils.disallow_positional_args(allowed=["name"])
@@ -410,7 +430,7 @@ def _get_all_versions(version_list):
 
 def _iter_full_names(predicate_fn=None):
   """Yield all registered datasets full_names (see `list_full_names`)."""
-  for builder_name, builder_cls in _DATASET_REGISTRY.items():
+  for builder_name, builder_cls in _DATASET_REGISTRY.items():  # pylint: disable=redefined-outer-name
     # Only keep requested datasets
     if predicate_fn is not None and not predicate_fn(builder_cls):
       continue
